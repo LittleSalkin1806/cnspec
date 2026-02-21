@@ -135,6 +135,7 @@ policies:
         checks:
           - uid: mondoo-gcp-security-logging-bucket-retention-30-days
           - uid: mondoo-gcp-security-logging-bucket-locked
+          - uid: mondoo-gcp-security-logging-bucket-cmek-encryption
           - uid: mondoo-gcp-security-logging-sinks-configured
       - title: Pub/Sub
         checks:
@@ -145,16 +146,21 @@ policies:
           - uid: mondoo-gcp-security-cloud-functions-ingress-restricted
           - uid: mondoo-gcp-security-cloud-functions-no-default-service-account
           - uid: mondoo-gcp-security-cloud-functions-vpc-connector-configured
+          - uid: mondoo-gcp-security-cloud-functions-cmek-encryption
       - title: Cloud Run
         checks:
           - uid: mondoo-gcp-security-cloud-run-ingress-restricted
           - uid: mondoo-gcp-security-cloud-run-cmek-encryption
           - uid: mondoo-gcp-security-cloud-run-no-default-service-account
+          - uid: mondoo-gcp-security-cloud-run-vpc-access-configured
+          - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account
+          - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption
       - title: Dataproc
         checks:
           - uid: mondoo-gcp-security-dataproc-cluster-encryption-configured
           - uid: mondoo-gcp-security-dataproc-cluster-internal-ip-only
           - uid: mondoo-gcp-security-dataproc-cluster-shielded-vms
+          - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account
       - title: Binary Authorization
         checks:
           - uid: mondoo-gcp-security-binary-authorization-default-rule-not-allow-all
@@ -8041,9 +8047,9 @@ queries:
       - url: https://cloud.google.com/logging/docs/storage
         title: Cloud Logging storage
   - uid: mondoo-gcp-security-logging-bucket-retention-30-days-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-logging-bucket'
     mql: |
-      gcp.project.loggingservice.buckets().all(retentionDays >= 30)
+      gcp.project.loggingservice.bucket.retentionDays >= 30
   - uid: mondoo-gcp-security-logging-bucket-retention-30-days-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_logging_project_bucket_config')
@@ -8151,11 +8157,12 @@ queries:
       - url: https://cloud.google.com/logging/docs/storage#locked-bucket
         title: Locked log buckets
   - uid: mondoo-gcp-security-logging-bucket-locked-gcp
-    filters: asset.platform == 'gcp'
+    filters: |
+      asset.platform == 'gcp-logging-bucket'
+      gcp.project.loggingservice.bucket.name != "_Default"
+      gcp.project.loggingservice.bucket.name != "_Required"
     mql: |
-      gcp.project.loggingservice.buckets()
-        .where(name != "_Default" && name != "_Required")
-        .all(locked == true)
+      gcp.project.loggingservice.bucket.locked == true
   - uid: mondoo-gcp-security-logging-bucket-locked-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_logging_project_bucket_config')
@@ -8176,6 +8183,114 @@ queries:
     mql: |
       terraform.state.resources.where(type == 'google_logging_project_bucket_config').all(
         values.locked == true
+      )
+  - uid: mondoo-gcp-security-logging-bucket-cmek-encryption
+    title: Ensure Cloud Logging log buckets use customer-managed encryption keys (CMEK)
+    impact: 60
+    variants:
+      - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Cloud Logging log buckets are encrypted using customer-managed encryption keys (CMEK) rather than default Google-managed keys. CMEK provides organizations with control over the encryption key lifecycle for log data at rest.
+
+        **Why this matters**
+
+        Log buckets may contain sensitive security and operational data that requires enhanced encryption controls:
+          - Google-managed encryption keys do not allow organizations to control key rotation, access, or revocation.
+          - CMEK enables organizations to revoke access to encrypted log data by disabling or destroying the key.
+          - Compliance frameworks such as PCI DSS, HIPAA, and SOC 2 may require customer-managed encryption for data at rest.
+          - CMEK provides audit trails through Cloud KMS for all key usage operations.
+
+        If log buckets are not encrypted with CMEK, it can lead to:
+          - Inability to independently manage the encryption key lifecycle for log data.
+          - Non-compliance with data protection requirements mandating customer-managed encryption.
+          - Limited auditability of encryption key operations on sensitive log data.
+
+        **Risk mitigation:**
+          - Configure CMEK for all log buckets that store sensitive or compliance-relevant logs.
+          - Use Cloud KMS to manage encryption keys with appropriate IAM policies and automatic rotation.
+          - Monitor key usage through Cloud Audit Logs.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_logging_project_bucket_config" "example" {
+              project        = var.project_id
+              location       = "global"
+              bucket_id      = "my-log-bucket"
+              retention_days = 30
+
+              cmek_settings {
+                kms_key_name = google_kms_crypto_key.example.id
+              }
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Logging > Logs Storage** in the Google Cloud Console.
+            2. Select the log bucket to update.
+            3. Click **Edit**.
+            4. Under **Encryption**, select **Customer-managed encryption key**.
+            5. Select or create a Cloud KMS key.
+            6. Click **Update bucket**.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            Update a log bucket with CMEK:
+
+            ```bash
+            gcloud logging buckets update BUCKET_ID \
+              --location=LOCATION \
+              --cmek-kms-key-name=projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY
+            ```
+    refs:
+      - url: https://cloud.google.com/logging/docs/routing/managed-encryption-storage
+        title: Customer-managed encryption keys for Cloud Logging
+  - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-gcp
+    filters: asset.platform == 'gcp-logging-bucket'
+    mql: |
+      gcp.project.loggingservice.bucket.cmekSettings != empty
+  - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_logging_project_bucket_config')
+    mql: |
+      terraform.resources('google_logging_project_bucket_config').all(
+        blocks.where(type == 'cmek_settings') != empty &&
+        blocks.where(type == 'cmek_settings').all(arguments.kms_key_name != empty)
+      )
+  - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_logging_project_bucket_config')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_logging_project_bucket_config').all(
+        change.after.cmek_settings != empty
+      )
+  - uid: mondoo-gcp-security-logging-bucket-cmek-encryption-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_logging_project_bucket_config')
+    mql: |
+      terraform.state.resources.where(type == 'google_logging_project_bucket_config').all(
+        values.cmek_settings != empty
       )
   - uid: mondoo-gcp-security-logging-sinks-configured
     title: Ensure Cloud Logging has at least one sink configured for log export
@@ -8357,11 +8472,9 @@ queries:
       - url: https://cloud.google.com/pubsub/docs/encryption
         title: Pub/Sub encryption
   - uid: mondoo-gcp-security-pubsub-topic-cmek-encryption-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-pubsub-topic'
     mql: |
-      gcp.project.pubsubService.topics().all(
-        config().kmsKeyName != ""
-      )
+      gcp.project.pubsubService.topic.config().kmsKeyName != ""
   - uid: mondoo-gcp-security-pubsub-topic-cmek-encryption-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_pubsub_topic')
@@ -8454,11 +8567,9 @@ queries:
       - url: https://cloud.google.com/pubsub/docs/subscription-properties
         title: Subscription properties
   - uid: mondoo-gcp-security-pubsub-subscription-expiration-configured-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-pubsub-subscription'
     mql: |
-      gcp.project.pubsubService.subscriptions().all(
-        config().expirationPolicy != empty
-      )
+      gcp.project.pubsubService.subscription.config().expirationPolicy != empty
   - uid: mondoo-gcp-security-pubsub-subscription-expiration-configured-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_pubsub_subscription')
@@ -8566,11 +8677,9 @@ queries:
       - url: https://cloud.google.com/functions/docs/networking/network-settings
         title: Cloud Functions networking settings
   - uid: mondoo-gcp-security-cloud-functions-ingress-restricted-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloud-function'
     mql: |
-      gcp.project.cloudFunctions.all(
-        ingressSettings != "ALLOW_ALL"
-      )
+      gcp.project.cloudFunction.ingressSettings != "ALLOW_ALL"
   - uid: mondoo-gcp-security-cloud-functions-ingress-restricted-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloudfunctions_function' || nameLabel == 'google_cloudfunctions2_function')
@@ -8676,12 +8785,10 @@ queries:
       - url: https://cloud.google.com/functions/docs/securing/function-identity
         title: Cloud Functions identity
   - uid: mondoo-gcp-security-cloud-functions-no-default-service-account-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloud-function'
     mql: |
-      gcp.project.cloudFunctions.all(
-        serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/ &&
-        serviceAccountEmail != /^[a-z0-9\-]+@appspot\.gserviceaccount\.com$/
-      )
+      gcp.project.cloudFunction.serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/
+      gcp.project.cloudFunction.serviceAccountEmail != /^[a-z0-9\-]+@appspot\.gserviceaccount\.com$/
   - uid: mondoo-gcp-security-cloud-functions-no-default-service-account-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloudfunctions_function' || nameLabel == 'google_cloudfunctions2_function')
@@ -8787,9 +8894,9 @@ queries:
       - url: https://cloud.google.com/functions/docs/networking/connecting-vpc
         title: Connecting to a VPC network
   - uid: mondoo-gcp-security-cloud-functions-vpc-connector-configured-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloud-function'
     mql: |
-      gcp.project.cloudFunctions.all(vpcConnector != "")
+      gcp.project.cloudFunction.vpcConnector != ""
   - uid: mondoo-gcp-security-cloud-functions-vpc-connector-configured-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloudfunctions_function' || nameLabel == 'google_cloudfunctions2_function')
@@ -8810,6 +8917,113 @@ queries:
     mql: |
       terraform.state.resources.where(type == 'google_cloudfunctions_function' || type == 'google_cloudfunctions2_function').all(
         values.vpc_connector != empty
+      )
+  - uid: mondoo-gcp-security-cloud-functions-cmek-encryption
+    title: Ensure Cloud Functions use customer-managed encryption keys (CMEK)
+    impact: 60
+    variants:
+      - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Cloud Functions are encrypted using customer-managed encryption keys (CMEK) rather than default Google-managed keys. CMEK provides organizations with control over the encryption key lifecycle for function source code and data at rest.
+
+        **Why this matters**
+
+        Cloud Functions may process sensitive data that requires enhanced encryption controls:
+          - Google-managed encryption keys do not allow organizations to control key rotation, access, or revocation.
+          - CMEK enables organizations to revoke access to encrypted function data by disabling or destroying the key.
+          - Compliance frameworks such as PCI DSS, HIPAA, and SOC 2 may require customer-managed encryption.
+          - CMEK provides audit trails through Cloud KMS for all key usage operations.
+
+        If Cloud Functions are not encrypted with CMEK, it can lead to:
+          - Inability to independently manage the encryption key lifecycle for function data.
+          - Non-compliance with data protection requirements mandating customer-managed encryption.
+          - Limited auditability of encryption key operations.
+
+        **Risk mitigation:**
+          - Configure CMEK for all Cloud Functions that handle sensitive data.
+          - Use Cloud KMS to manage encryption keys with appropriate IAM policies and automatic rotation.
+          - Monitor key usage through Cloud Audit Logs.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_cloudfunctions2_function" "example" {
+              name     = "example-function"
+              location = "us-central1"
+
+              build_config {
+                runtime     = "python312"
+                entry_point = "main"
+              }
+
+              kms_key_name = google_kms_crypto_key.example.id
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Cloud Functions** in the Google Cloud Console.
+            2. Select the function or click **Create Function**.
+            3. Under **Runtime, build, connections and security settings**, expand **Security**.
+            4. Select **Customer-managed encryption key**.
+            5. Choose or create a Cloud KMS key.
+            6. Deploy the function.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            Deploy a function with CMEK:
+
+            ```bash
+            gcloud functions deploy FUNCTION_NAME \
+              --kms-key=projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY
+            ```
+    refs:
+      - url: https://cloud.google.com/functions/docs/securing/cmek
+        title: Customer-managed encryption keys for Cloud Functions
+  - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-gcp
+    filters: asset.platform == 'gcp-cloud-function'
+    mql: |
+      gcp.project.cloudFunction.kmsKeyName != ""
+  - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloudfunctions_function' || nameLabel == 'google_cloudfunctions2_function')
+    mql: |
+      terraform.resources.where(nameLabel == 'google_cloudfunctions_function' || nameLabel == 'google_cloudfunctions2_function').all(
+        arguments.kms_key_name != empty
+      )
+  - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_cloudfunctions_function' || type == 'google_cloudfunctions2_function')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_cloudfunctions_function' || type == 'google_cloudfunctions2_function').all(
+        change.after.kms_key_name != empty
+      )
+  - uid: mondoo-gcp-security-cloud-functions-cmek-encryption-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_cloudfunctions_function' || type == 'google_cloudfunctions2_function')
+    mql: |
+      terraform.state.resources.where(type == 'google_cloudfunctions_function' || type == 'google_cloudfunctions2_function').all(
+        values.kms_key_name != empty
       )
   # ============================================================================
   # Cloud Run Checks
@@ -8897,11 +9111,9 @@ queries:
       - url: https://cloud.google.com/run/docs/securing/ingress
         title: Restricting ingress for Cloud Run
   - uid: mondoo-gcp-security-cloud-run-ingress-restricted-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloudrun-service'
     mql: |
-      gcp.project.cloudRunService.services().all(
-        ingress != "INGRESS_TRAFFIC_ALL"
-      )
+      gcp.project.cloudRunService.service.ingress != "INGRESS_TRAFFIC_ALL"
   - uid: mondoo-gcp-security-cloud-run-ingress-restricted-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_service')
@@ -9000,11 +9212,9 @@ queries:
       - url: https://cloud.google.com/run/docs/securing/using-cmek
         title: Using customer-managed encryption keys with Cloud Run
   - uid: mondoo-gcp-security-cloud-run-cmek-encryption-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloudrun-service'
     mql: |
-      gcp.project.cloudRunService.services().all(
-        template.encryptionKey != ""
-      )
+      gcp.project.cloudRunService.service.template.encryptionKey != ""
   - uid: mondoo-gcp-security-cloud-run-cmek-encryption-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_service')
@@ -9117,13 +9327,11 @@ queries:
       - url: https://cloud.google.com/run/docs/securing/service-identity
         title: Cloud Run service identity
   - uid: mondoo-gcp-security-cloud-run-no-default-service-account-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-cloudrun-service'
     mql: |
-      gcp.project.cloudRunService.services().all(
-        template.serviceAccountEmail != "" &&
-        template.serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/ &&
-        template.serviceAccountEmail != /^[a-z0-9\-]+@appspot\.gserviceaccount\.com$/
-      )
+      gcp.project.cloudRunService.service.template.serviceAccountEmail != ""
+      gcp.project.cloudRunService.service.template.serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/
+      gcp.project.cloudRunService.service.template.serviceAccountEmail != /^[a-z0-9\-]+@appspot\.gserviceaccount\.com$/
   - uid: mondoo-gcp-security-cloud-run-no-default-service-account-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_service')
@@ -9151,6 +9359,354 @@ queries:
           _['service_account'] != empty &&
           _['service_account'] != /^\d+-compute@developer\.gserviceaccount\.com$/
         )
+      )
+  - uid: mondoo-gcp-security-cloud-run-vpc-access-configured
+    title: Ensure Cloud Run services have VPC access configured
+    impact: 60
+    variants:
+      - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Cloud Run services have VPC access configured to enable secure communication with resources in a VPC network. Without VPC access, services can only reach internal resources through public internet paths, increasing exposure and latency.
+
+        **Why this matters**
+
+        VPC access enables Cloud Run services to communicate with internal resources using private IP addresses:
+          - Services without VPC access must route traffic through the public internet to reach VPC resources like databases, caches, or internal APIs.
+          - Internal traffic routing reduces exposure to network-based attacks and eavesdropping.
+          - VPC access enables network-level access controls through firewall rules and VPC Service Controls.
+          - Private connectivity is essential for compliance with data protection requirements that mandate encrypted internal communication paths.
+
+        **Risk mitigation:**
+          - Configure VPC access for Cloud Run services that communicate with internal resources.
+          - Use Direct VPC egress or a Serverless VPC Access connector.
+          - Configure egress settings to control which traffic routes through the VPC.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_cloud_run_v2_service" "example" {
+              name     = "example-service"
+              location = "us-central1"
+
+              template {
+                vpc_access {
+                  connector = google_vpc_access_connector.connector.id
+                  egress    = "ALL_TRAFFIC"
+                }
+
+                containers {
+                  image = "us-docker.pkg.dev/cloudrun/container/hello"
+                }
+              }
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Cloud Run** in the Google Cloud Console.
+            2. Select the service to update.
+            3. Click **Edit & Deploy New Revision**.
+            4. Under **Networking**, configure **VPC** access with a connector or Direct VPC egress.
+            5. Click **Deploy**.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            ```bash
+            gcloud run services update SERVICE_NAME \
+              --vpc-connector=projects/PROJECT/locations/REGION/connectors/CONNECTOR_NAME \
+              --vpc-egress=all-traffic \
+              --region=REGION
+            ```
+    refs:
+      - url: https://cloud.google.com/run/docs/configuring/vpc-connectors
+        title: Connecting to a VPC network from Cloud Run
+  - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-gcp
+    filters: asset.platform == 'gcp-cloudrun-service'
+    mql: |
+      gcp.project.cloudRunService.service.template.vpcAccess != empty
+  - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_service')
+    mql: |
+      terraform.resources('google_cloud_run_v2_service').all(
+        blocks.where(type == 'template').all(
+          blocks.where(type == 'vpc_access') != empty
+        )
+      )
+  - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_cloud_run_v2_service')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_cloud_run_v2_service').all(
+        change.after.template != empty &&
+        change.after.template.all(_['vpc_access'] != empty)
+      )
+  - uid: mondoo-gcp-security-cloud-run-vpc-access-configured-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_cloud_run_v2_service')
+    mql: |
+      terraform.state.resources.where(type == 'google_cloud_run_v2_service').all(
+        values.template != empty &&
+        values.template.all(_['vpc_access'] != empty)
+      )
+  # ============================================================================
+  # Cloud Run Job Checks
+  # ============================================================================
+  - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account
+    title: Ensure Cloud Run jobs do not use the default service account
+    impact: 80
+    variants:
+      - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Cloud Run jobs are not using the default Compute Engine service account. Default service accounts have overly broad permissions (Editor role) and should be replaced with custom service accounts scoped to only the permissions required by the job.
+
+        **Why this matters**
+
+        Cloud Run jobs using default service accounts inherit excessive permissions:
+          - The default Compute Engine service account has broad access to project resources via the Editor role.
+          - A compromised Cloud Run job with a default service account can access, modify, or delete resources across the entire project.
+          - Custom service accounts with narrowly scoped roles limit the blast radius of security incidents.
+          - Dedicated service accounts improve auditability by linking job actions to specific identities.
+
+        If Cloud Run jobs use the default service account, it can lead to:
+          - Privilege escalation through a compromised job container.
+          - Lateral movement across project resources.
+          - Violation of least privilege requirements in security frameworks.
+
+        **Risk mitigation:**
+          - Create dedicated service accounts with only the IAM roles needed for each job.
+          - Specify the custom service account in the job's task template.
+          - Regularly audit service account permissions and usage.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_service_account" "job_sa" {
+              account_id   = "cloud-run-job-sa"
+              display_name = "Cloud Run Job Service Account"
+            }
+
+            resource "google_cloud_run_v2_job" "example" {
+              name     = "example-job"
+              location = "us-central1"
+
+              template {
+                template {
+                  service_account = google_service_account.job_sa.email
+
+                  containers {
+                    image = "us-docker.pkg.dev/cloudrun/container/job"
+                  }
+                }
+              }
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Cloud Run > Jobs** in the Google Cloud Console.
+            2. Select the job to update.
+            3. Click **Edit**.
+            4. Under **Security**, select a custom service account from the **Service account** dropdown.
+            5. Click **Save**.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            ```bash
+            gcloud run jobs update JOB_NAME \
+              --service-account=CUSTOM_SA_EMAIL \
+              --region=REGION
+            ```
+    refs:
+      - url: https://cloud.google.com/run/docs/securing/service-identity
+        title: Cloud Run service identity
+  - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-gcp
+    filters: asset.platform == 'gcp-cloudrun-job'
+    mql: |
+      gcp.project.cloudRunService.job.template.template.serviceAccountEmail != ""
+      gcp.project.cloudRunService.job.template.template.serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/
+      gcp.project.cloudRunService.job.template.template.serviceAccountEmail != /^[a-z0-9\-]+@appspot\.gserviceaccount\.com$/
+  - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.resources('google_cloud_run_v2_job').all(
+        blocks.where(type == 'template').all(
+          blocks.where(type == 'template').all(
+            arguments.service_account != empty
+          )
+        )
+      )
+  - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_cloud_run_v2_job').all(
+        change.after.template != empty &&
+        change.after.template.all(_['template'] != empty && _['template'].all(_['service_account'] != empty))
+      )
+  - uid: mondoo-gcp-security-cloud-run-job-no-default-service-account-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.state.resources.where(type == 'google_cloud_run_v2_job').all(
+        values.template != empty &&
+        values.template.all(
+          _['template'] != empty &&
+          _['template'].all(
+            _['service_account'] != empty &&
+            _['service_account'] != /^\d+-compute@developer\.gserviceaccount\.com$/
+          )
+        )
+      )
+  - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption
+    title: Ensure Cloud Run jobs use customer-managed encryption keys (CMEK)
+    impact: 60
+    variants:
+      - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Cloud Run jobs are encrypted using customer-managed encryption keys (CMEK) rather than default Google-managed keys. CMEK provides organizations with control over the encryption key lifecycle for job container images and data at rest.
+
+        **Why this matters**
+
+        Cloud Run jobs process and store data that may be subject to regulatory encryption requirements:
+          - CMEK enables organizations to control key rotation, access policies, and revocation.
+          - Organizations can revoke access to encrypted data by disabling or destroying the CMEK key.
+          - Cloud Audit Logs provide visibility into all key usage operations.
+          - Compliance frameworks may require customer-managed encryption for workloads handling sensitive data.
+
+        **Risk mitigation:**
+          - Configure CMEK for Cloud Run jobs handling sensitive or regulated data.
+          - Use Cloud KMS to manage keys with appropriate IAM policies and automatic rotation.
+          - Monitor key usage through Cloud Audit Logs.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_cloud_run_v2_job" "example" {
+              name     = "example-job"
+              location = "us-central1"
+
+              template {
+                template {
+                  encryption_key = google_kms_crypto_key.example.id
+
+                  containers {
+                    image = "us-docker.pkg.dev/cloudrun/container/job"
+                  }
+                }
+              }
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Cloud Run > Jobs** in the Google Cloud Console.
+            2. Select the job or click **Create Job**.
+            3. Under **Security**, select **Customer-managed encryption key**.
+            4. Choose or create a Cloud KMS key.
+            5. Save the job.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            ```bash
+            gcloud run jobs update JOB_NAME \
+              --key=projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY \
+              --region=REGION
+            ```
+    refs:
+      - url: https://cloud.google.com/run/docs/securing/using-cmek
+        title: Using customer-managed encryption keys with Cloud Run
+  - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-gcp
+    filters: asset.platform == 'gcp-cloudrun-job'
+    mql: |
+      gcp.project.cloudRunService.job.template.template.encryptionKey != ""
+  - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.resources('google_cloud_run_v2_job').all(
+        blocks.where(type == 'template').all(
+          blocks.where(type == 'template').all(
+            arguments.encryption_key != empty
+          )
+        )
+      )
+  - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_cloud_run_v2_job').all(
+        change.after.template != empty &&
+        change.after.template.all(_['template'] != empty && _['template'].all(_['encryption_key'] != empty))
+      )
+  - uid: mondoo-gcp-security-cloud-run-job-cmek-encryption-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_cloud_run_v2_job')
+    mql: |
+      terraform.state.resources.where(type == 'google_cloud_run_v2_job').all(
+        values.template != empty &&
+        values.template.all(_['template'] != empty && _['template'].all(_['encryption_key'] != empty))
       )
   # ============================================================================
   # Dataproc Checks
@@ -9230,11 +9786,9 @@ queries:
       - url: https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/customer-managed-encryption
         title: Customer-managed encryption keys for Dataproc
   - uid: mondoo-gcp-security-dataproc-cluster-encryption-configured-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-dataproc-cluster'
     mql: |
-      gcp.project.dataprocService.clusters().all(
-        config.encryption['gcePdKmsKeyName'] != empty
-      )
+      gcp.project.dataprocService.cluster.config.encryption['gcePdKmsKeyName'] != empty
   - uid: mondoo-gcp-security-dataproc-cluster-encryption-configured-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_dataproc_cluster')
@@ -9344,11 +9898,9 @@ queries:
       - url: https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/network
         title: Dataproc cluster network configuration
   - uid: mondoo-gcp-security-dataproc-cluster-internal-ip-only-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-dataproc-cluster'
     mql: |
-      gcp.project.dataprocService.clusters().all(
-        config.gceCluster.internalIpOnly == true
-      )
+      gcp.project.dataprocService.cluster.config.gceCluster.internalIpOnly == true
   - uid: mondoo-gcp-security-dataproc-cluster-internal-ip-only-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_dataproc_cluster')
@@ -9455,13 +10007,11 @@ queries:
       - url: https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/shielded-vms
         title: Shielded VMs in Dataproc
   - uid: mondoo-gcp-security-dataproc-cluster-shielded-vms-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-dataproc-cluster'
     mql: |
-      gcp.project.dataprocService.clusters().all(
-        config.gceCluster.shieldedInstanceConfig.enableSecureBoot == true &&
-        config.gceCluster.shieldedInstanceConfig.enableVtpm == true &&
-        config.gceCluster.shieldedInstanceConfig.enableIntegrityMonitoring == true
-      )
+      gcp.project.dataprocService.cluster.config.gceCluster.shieldedInstanceConfig.enableSecureBoot == true
+      gcp.project.dataprocService.cluster.config.gceCluster.shieldedInstanceConfig.enableVtpm == true
+      gcp.project.dataprocService.cluster.config.gceCluster.shieldedInstanceConfig.enableIntegrityMonitoring == true
   - uid: mondoo-gcp-security-dataproc-cluster-shielded-vms-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_dataproc_cluster')
@@ -9510,6 +10060,129 @@ queries:
               _['enable_vtpm'] == true &&
               _['enable_integrity_monitoring'] == true
             )
+          )
+        )
+      )
+  - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account
+    title: Ensure Dataproc clusters do not use the default service account
+    impact: 80
+    variants:
+      - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-gcp
+        tags:
+          mondoo.com/filter-title: "GCP"
+          mondoo.com/icon: "gcp"
+      - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-hcl
+        tags:
+          mondoo.com/filter-title: "Terraform HCL"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-plan
+        tags:
+          mondoo.com/filter-title: "Terraform Plan"
+          mondoo.com/icon: "terraform"
+      - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-state
+        tags:
+          mondoo.com/filter-title: "Terraform State"
+          mondoo.com/icon: "terraform"
+    docs:
+      desc: |
+        This check ensures that Dataproc clusters are not configured to use the default Compute Engine service account. Default service accounts have overly broad permissions and should be replaced with custom service accounts following the principle of least privilege.
+
+        **Why this matters**
+
+        Dataproc clusters using default service accounts inherit excessive permissions:
+          - The default Compute Engine service account has the Editor role, granting broad access to most project resources.
+          - A compromised cluster node with a default service account can be used to access, modify, or delete resources across the entire project.
+          - Custom service accounts with narrowly scoped roles limit the blast radius of any security incident.
+          - Using dedicated service accounts improves auditability by clearly linking cluster actions to specific identities.
+
+        If Dataproc clusters use the default service account, it can lead to:
+          - Privilege escalation through a compromised cluster node.
+          - Lateral movement across project resources.
+          - Violation of least privilege requirements in CIS GCP Foundations Benchmark and NIST 800-53.
+
+        **Risk mitigation:**
+          - Create dedicated service accounts with only the IAM roles needed for each cluster's workload.
+          - Assign the custom service account when creating the cluster.
+          - Regularly review and audit cluster service account permissions.
+      remediation:
+        - id: terraform
+          desc: |
+            **Using Terraform**
+
+            ```hcl
+            resource "google_service_account" "dataproc_sa" {
+              account_id   = "dataproc-sa"
+              display_name = "Dataproc Service Account"
+            }
+
+            resource "google_dataproc_cluster" "example" {
+              name   = "example-cluster"
+              region = "us-central1"
+
+              cluster_config {
+                gce_cluster_config {
+                  service_account = google_service_account.dataproc_sa.email
+                }
+              }
+            }
+            ```
+        - id: console
+          desc: |
+            **Using Google Cloud Console**
+
+            1. Navigate to **Dataproc > Clusters** in the Google Cloud Console.
+            2. Click **Create Cluster**.
+            3. Under **Manage security**, expand **Project access**.
+            4. Select a custom service account instead of the default.
+            5. Complete cluster creation.
+        - id: cli
+          desc: |
+            **Using Google Cloud CLI**
+
+            ```bash
+            gcloud dataproc clusters create CLUSTER_NAME \
+              --region=REGION \
+              --service-account=CUSTOM_SA_EMAIL
+            ```
+    refs:
+      - url: https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/service-accounts
+        title: Dataproc service accounts
+  - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-gcp
+    filters: asset.platform == 'gcp-dataproc-cluster'
+    mql: |
+      gcp.project.dataprocService.cluster.config.gceCluster.serviceAccountEmail != ""
+      gcp.project.dataprocService.cluster.config.gceCluster.serviceAccountEmail != /^\d+-compute@developer\.gserviceaccount\.com$/
+  - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-hcl
+    filters: |
+      asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_dataproc_cluster')
+    mql: |
+      terraform.resources('google_dataproc_cluster').all(
+        blocks.where(type == 'cluster_config').all(
+          blocks.where(type == 'gce_cluster_config').all(arguments.service_account != empty)
+        )
+      )
+  - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-plan
+    filters: |
+      asset.platform == 'terraform-plan' && terraform.plan.resourceChanges.contains(type == 'google_dataproc_cluster')
+    mql: |
+      terraform.plan.resourceChanges.where(type == 'google_dataproc_cluster').all(
+        change.after.cluster_config != empty &&
+        change.after.cluster_config.all(
+          _['gce_cluster_config'] != empty &&
+          _['gce_cluster_config'].all(_['service_account'] != empty)
+        )
+      )
+  - uid: mondoo-gcp-security-dataproc-cluster-no-default-service-account-terraform-state
+    filters: |
+      asset.platform == 'terraform-state' && terraform.state.resources.contains(type == 'google_dataproc_cluster')
+    mql: |
+      terraform.state.resources.where(type == 'google_dataproc_cluster').all(
+        values.cluster_config != empty &&
+        values.cluster_config.all(
+          _['gce_cluster_config'] != empty &&
+          _['gce_cluster_config'].all(
+            _['service_account'] != empty &&
+            _['service_account'] != /^\d+-compute@developer\.gserviceaccount\.com$/
           )
         )
       )
@@ -9824,11 +10497,9 @@ queries:
       - url: https://cloud.google.com/docs/authentication/api-keys#api_key_restrictions
         title: API key restrictions
   - uid: mondoo-gcp-security-api-keys-api-restrictions-configured-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-apikey'
     mql: |
-      gcp.project.apiKeys.all(
-        restrictions.apiTargets.length > 0
-      )
+      gcp.project.apiKey.restrictions.apiTargets.length > 0
   - uid: mondoo-gcp-security-api-keys-api-restrictions-configured-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_apikeys_key')
@@ -9949,14 +10620,12 @@ queries:
       - url: https://cloud.google.com/docs/authentication/api-keys#api_key_restrictions
         title: API key restrictions
   - uid: mondoo-gcp-security-api-keys-application-restrictions-configured-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-apikey'
     mql: |
-      gcp.project.apiKeys.all(
-        restrictions.browserKeyRestrictions != empty ||
-        restrictions.serverKeyRestrictions != empty ||
-        restrictions.androidKeyRestrictions != empty ||
-        restrictions.iosKeyRestrictions != empty
-      )
+      gcp.project.apiKey.restrictions.browserKeyRestrictions != empty ||
+      gcp.project.apiKey.restrictions.serverKeyRestrictions != empty ||
+      gcp.project.apiKey.restrictions.androidKeyRestrictions != empty ||
+      gcp.project.apiKey.restrictions.iosKeyRestrictions != empty
   - uid: mondoo-gcp-security-api-keys-application-restrictions-configured-terraform-hcl
     filters: |
       asset.platform == 'terraform-hcl' && terraform.resources.contains(nameLabel == 'google_apikeys_key')
@@ -10040,11 +10709,9 @@ queries:
       - url: https://cloud.google.com/docs/authentication/api-keys
         title: API keys overview
   - uid: mondoo-gcp-security-api-keys-not-stale-gcp
-    filters: asset.platform == 'gcp'
+    filters: asset.platform == 'gcp-apikey'
     mql: |
-      gcp.project.apiKeys.all(
-        updated > time.now - 90 * time.day || created > time.now - 90 * time.day
-      )
+      gcp.project.apiKey.updated > time.now - 90 * time.day || gcp.project.apiKey.created > time.now - 90 * time.day
   # ============================================================================
   # Expanded Compute Network Checks
   # ============================================================================

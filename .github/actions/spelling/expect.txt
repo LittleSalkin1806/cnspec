@@ -16,6 +16,7 @@ ampl
 amz
 ANVA
 apigatewayv
+apikey
 apikeys
 apparmor
 appgroup
@@ -61,6 +62,7 @@ cloudkms
 cloudrun
 cloudservices
 CMDLINE
+cmek
 codebases
 COMNAP
 COMNODE
